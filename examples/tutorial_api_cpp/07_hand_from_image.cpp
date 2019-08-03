@@ -20,8 +20,36 @@ DEFINE_string(image_path, "examples/media/COCO_val2014_000000000241.jpg",
 DEFINE_bool(no_display,                 false,
     "Enable to disable the visual display.");
 
+/* NOTE(brendan): source: https://stackoverflow.com/a/17820615 */
+static std::string
+type2str(int type)
+{
+        std::string r;
+
+        uchar depth = type & CV_MAT_DEPTH_MASK;
+        uchar chans = 1 + (type >> CV_CN_SHIFT);
+
+        switch ( depth ) {
+                case CV_8U:  r = "8U"; break;
+                case CV_8S:  r = "8S"; break;
+                case CV_16U: r = "16U"; break;
+                case CV_16S: r = "16S"; break;
+                case CV_32S: r = "32S"; break;
+                case CV_32F: r = "32F"; break;
+                case CV_64F: r = "64F"; break;
+                default:     r = "User"; break;
+        }
+
+        r += "C";
+        r += (chans+'0');
+
+        return r;
+}
+
 // This worker will just read and return all the jpg files in a directory
-void display(const std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>& datumsPtr)
+void display(const std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>& datumsPtr,
+             const cv::Mat& imageToProcess,
+             const std::vector<std::array<op::Rectangle<float>, 2>>& hand_rects)
 {
     try
     {
@@ -30,9 +58,62 @@ void display(const std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>& dat
             // datum.poseKeypoints: Array<float> with the estimated pose
         if (datumsPtr != nullptr && !datumsPtr->empty())
         {
+                auto& handHeatMaps = datumsPtr->at(0)->handHeatMaps;
+                const auto num_people = handHeatMaps[0].getSize(0);
+                const auto num_joints = handHeatMaps[0].getSize(1);
+                const auto height = handHeatMaps[0].getSize(2);
+                const auto width = handHeatMaps[0].getSize(3);
+                int32_t desired_joint = 0;
+                int32_t chanidx = desired_joint % num_joints*height*width;
+                const cv::Mat desiredChannelHeatMap{height,
+                                                    width,
+                                                    CV_32F,
+                                                    &handHeatMaps[0].getPtr()[chanidx]};
+
+                /* NOTE(brendan): from 08_heatmaps_from_image.cpp. */
+                auto& inputNetData = datumsPtr->at(0)->inputNetData[0];
+                op::log("Input net data size: [" + std::to_string(inputNetData.getSize(0)) + ", "
+                        + std::to_string(inputNetData.getSize(1)) + ", "
+                        + std::to_string(inputNetData.getSize(2)) + ", "
+                        + std::to_string(inputNetData.getSize(3)) + "]");
+                op::log("Image to process data size: [" + std::to_string(imageToProcess.rows) + ", "
+                        + std::to_string(imageToProcess.cols) + "]"
+                        + ", type: " + type2str(imageToProcess.type()));
+                const cv::Mat inputNetDataB{height,
+                                            width,
+                                            CV_32F,
+                                            &inputNetData.getPtr()[0]};
+                const cv::Mat inputNetDataG{height,
+                                            width,
+                                            CV_32F,
+                                            &inputNetData.getPtr()[height*width]};
+                const cv::Mat inputNetDataR{height,
+                                            width,
+                                            CV_32F,
+                                            &inputNetData.getPtr()[2*height*width]};
+                cv::Mat netInputImage;
+                cv::merge(std::vector<cv::Mat>{inputNetDataB, inputNetDataG, inputNetDataR}, netInputImage);
+                netInputImage = (netInputImage+0.5)*255;
+                cv::Mat netInputImageUint8;
+                netInputImage.convertTo(netInputImageUint8, CV_8UC1);
+
+                /* cv::Mat desiredChannelHeatMapUint8; */
+                /* desiredChannelHeatMap.convertTo(desiredChannelHeatMapUint8, CV_8UC1); */
+                /* // Combining both images */
+                /* cv::Mat imageToRender; */
+                /* cv::applyColorMap(desiredChannelHeatMapUint8, desiredChannelHeatMapUint8, cv::COLORMAP_JET); */
+                /* cv::addWeighted(netInputImageUint8, 0.5, desiredChannelHeatMapUint8, 0.5, 0., imageToRender); */
+                /* cv::imwrite("./test.jpg", imageToRender); */
+
             // Display image
-            cv::imshow(OPEN_POSE_NAME_AND_VERSION + " - Tutorial C++ API", datumsPtr->at(0)->cvOutputData);
-            cv::waitKey(0);
+            op::log("Left hand heatmaps size: [" + std::to_string(handHeatMaps[0].getSize(0)) + ", "
+                    + std::to_string(handHeatMaps[0].getSize(1)) + ", "
+                    + std::to_string(handHeatMaps[0].getSize(2)) + ", "
+                    + std::to_string(handHeatMaps[0].getSize(3)) + "]");
+            op::log("Right hand heatmaps size: [" + std::to_string(handHeatMaps[0].getSize(0)) + ", "
+                    + std::to_string(handHeatMaps[1].getSize(1)) + ", "
+                    + std::to_string(handHeatMaps[1].getSize(2)) + ", "
+                    + std::to_string(handHeatMaps[1].getSize(3)) + "]");
         }
         else
             op::log("Nullptr or empty datumsPtr found.", op::Priority::High);
@@ -204,7 +285,7 @@ int tutorialApiCpp()
         {
             printKeypoints(datumsPtr);
             if (!FLAGS_no_display)
-                display(datumsPtr);
+                display(datumsPtr, imageToProcess, handRectangles);
         }
         else
             op::log("Image could not be processed.", op::Priority::High);
