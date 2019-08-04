@@ -46,10 +46,48 @@ type2str(int type)
         return r;
 }
 
+/**
+ * NOTE(brendan): based on
+ * https://github.com/dukebw/openpose/blob/f09e48820a44480d4c1197b8a2228ce76c073c68/src/openpose/hand/handExtractorCaffe.cpp#L44.
+ */
+static void
+cropFrame(cv::Mat& handImage,
+          const cv::Mat& cvInputData,
+          const op::Rectangle<float>& handRectangle,
+          const int netInputSide,
+          const op::Point<int>& netOutputSize,
+          const bool mirrorImage)
+{
+        try
+        {
+                // Resize image to hands positions
+                const auto scaleLeftHand = handRectangle.width / (float)netInputSide;
+                cv::Mat affineMatrix = cv::Mat::eye(2,3,CV_64F);
+                if (mirrorImage)
+                        affineMatrix.at<double>(0,0) = -scaleLeftHand;
+                else
+                        affineMatrix.at<double>(0,0) = scaleLeftHand;
+                affineMatrix.at<double>(1,1) = scaleLeftHand;
+                if (mirrorImage)
+                        affineMatrix.at<double>(0,2) = handRectangle.x + handRectangle.width;
+                else
+                        affineMatrix.at<double>(0,2) = handRectangle.x;
+                affineMatrix.at<double>(1,2) = handRectangle.y;
+                cv::warpAffine(cvInputData, handImage, affineMatrix, cv::Size{netOutputSize.x, netOutputSize.y},
+                               CV_INTER_LINEAR | CV_WARP_INVERSE_MAP, cv::BORDER_CONSTANT, cv::Scalar{0,0,0});
+                // CV_INTER_CUBIC | CV_WARP_INVERSE_MAP, cv::BORDER_CONSTANT, cv::Scalar{0,0,0});
+                // cv::Mat -> float*
+        }
+        catch (const std::exception& e)
+        {
+                op::error(e.what(), __LINE__, __FUNCTION__, __FILE__);
+        }
+}
+
 // This worker will just read and return all the jpg files in a directory
-void display(const std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>& datumsPtr,
-             const cv::Mat& imageToProcess,
-             const std::vector<std::array<op::Rectangle<float>, 2>>& hand_rects)
+static void
+display(const std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>& datumsPtr,
+        const cv::Mat& imageToProcess)
 {
     try
     {
@@ -79,31 +117,14 @@ void display(const std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>& dat
                 op::log("Image to process data size: [" + std::to_string(imageToProcess.rows) + ", "
                         + std::to_string(imageToProcess.cols) + "]"
                         + ", type: " + type2str(imageToProcess.type()));
-                const cv::Mat inputNetDataB{height,
-                                            width,
-                                            CV_32F,
-                                            &inputNetData.getPtr()[0]};
-                const cv::Mat inputNetDataG{height,
-                                            width,
-                                            CV_32F,
-                                            &inputNetData.getPtr()[height*width]};
-                const cv::Mat inputNetDataR{height,
-                                            width,
-                                            CV_32F,
-                                            &inputNetData.getPtr()[2*height*width]};
-                cv::Mat netInputImage;
-                cv::merge(std::vector<cv::Mat>{inputNetDataB, inputNetDataG, inputNetDataR}, netInputImage);
-                netInputImage = (netInputImage+0.5)*255;
-                cv::Mat netInputImageUint8;
-                netInputImage.convertTo(netInputImageUint8, CV_8UC1);
 
-                /* cv::Mat desiredChannelHeatMapUint8; */
-                /* desiredChannelHeatMap.convertTo(desiredChannelHeatMapUint8, CV_8UC1); */
-                /* // Combining both images */
-                /* cv::Mat imageToRender; */
-                /* cv::applyColorMap(desiredChannelHeatMapUint8, desiredChannelHeatMapUint8, cv::COLORMAP_JET); */
-                /* cv::addWeighted(netInputImageUint8, 0.5, desiredChannelHeatMapUint8, 0.5, 0., imageToRender); */
-                /* cv::imwrite("./test.jpg", imageToRender); */
+                cv::Mat desiredChannelHeatMapUint8;
+                desiredChannelHeatMap.convertTo(desiredChannelHeatMapUint8, CV_8UC1);
+                // Combining both images
+                cv::Mat imageToRender;
+                cv::applyColorMap(desiredChannelHeatMapUint8, desiredChannelHeatMapUint8, cv::COLORMAP_JET);
+                cv::addWeighted(imageToProcess, 0.5, desiredChannelHeatMapUint8, 0.5, 0., imageToRender);
+                cv::imwrite("./test.jpg", imageToRender);
 
             // Display image
             op::log("Left hand heatmaps size: [" + std::to_string(handHeatMaps[0].getSize(0)) + ", "
@@ -283,9 +304,22 @@ int tutorialApiCpp()
         opWrapper.emplaceAndPop(datumsPtr);
         if (datumsPtr != nullptr)
         {
+                datumPtr->netOutputSize.x = 368;
+                datumPtr->netOutputSize.y = 368;
+                const auto netInputSide = op::fastMin(datumPtr->netOutputSize.x,
+                                                      datumPtr->netOutputSize.y);
+                auto& inputNetData = datumsPtr->at(0)->inputNetData[0];
+                cv::Mat handImage;
+                cropFrame(handImage,
+                          imageToProcess,
+                          handRectangles.at(0).at(0),
+                          netInputSide,
+                          datumPtr->netOutputSize,
+                          false);
+
             printKeypoints(datumsPtr);
             if (!FLAGS_no_display)
-                display(datumsPtr, imageToProcess, handRectangles);
+                display(datumsPtr, handImage);
         }
         else
             op::log("Image could not be processed.", op::Priority::High);
