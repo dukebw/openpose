@@ -101,43 +101,51 @@ display(const std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>& datumsPt
                 const auto num_joints = handHeatMaps[0].getSize(1);
                 const auto height = handHeatMaps[0].getSize(2);
                 const auto width = handHeatMaps[0].getSize(3);
-                int32_t desired_joint = 0;
-                int32_t chanidx = desired_joint % num_joints*height*width;
-                const cv::Mat desiredChannelHeatMap{height,
-                                                    width,
-                                                    CV_32F,
-                                                    &handHeatMaps[0].getPtr()[chanidx]};
+                cv::Mat imageToRender = cv::Mat::zeros(cv::Size{height, width}, CV_8UC3);
+                for (int32_t jointidx = 0;
+                     jointidx < num_joints;
+                     ++jointidx) {
+                        cv::Mat desiredChannelHeatMap{
+                                height,
+                                width,
+                                CV_32F,
+                                handHeatMaps[0].getPtr() + jointidx*height*width};
 
-                /* NOTE(brendan): from 08_heatmaps_from_image.cpp. */
-                auto& inputNetData = datumsPtr->at(0)->inputNetData[0];
-                op::log("Input net data size: [" + std::to_string(inputNetData.getSize(0)) + ", "
-                        + std::to_string(inputNetData.getSize(1)) + ", "
-                        + std::to_string(inputNetData.getSize(2)) + ", "
-                        + std::to_string(inputNetData.getSize(3)) + "]");
-                op::log("Image to process data size: [" + std::to_string(imageToProcess.rows) + ", "
-                        + std::to_string(imageToProcess.cols) + "]"
-                        + ", type: " + type2str(imageToProcess.type()));
+                        cv::Mat desiredChannelHeatMapUint8;
+                        desiredChannelHeatMap.convertTo(desiredChannelHeatMapUint8,
+                                                        CV_8UC1);
 
-                cv::Mat desiredChannelHeatMapUint8;
-                desiredChannelHeatMap.convertTo(desiredChannelHeatMapUint8, CV_8UC1);
-                // Combining both images
-                cv::Mat imageToRender;
-                cv::applyColorMap(desiredChannelHeatMapUint8, desiredChannelHeatMapUint8, cv::COLORMAP_JET);
-                cv::addWeighted(imageToProcess, 0.5, desiredChannelHeatMapUint8, 0.5, 0., imageToRender);
+                        // Combining both images
+                        cv::Mat heat_colormap;
+                        cv::applyColorMap(desiredChannelHeatMapUint8,
+                                          heat_colormap,
+                                          cv::COLORMAP_JET);
+                        for (int32_t j = 0;
+                             j < height;
+                             ++j) {
+                                for (int32_t i = 0;
+                                     i < width;
+                                     ++i) {
+                                        if (desiredChannelHeatMapUint8.at<uchar>(j, i) < 8)
+                                                continue;
+                                        imageToRender.at<cv::Point3_<uchar>>(j, i) = 0.5*(imageToRender.at<cv::Point3_<uchar>>(j, i) +
+                                                                                          heat_colormap.at<cv::Point3_<uchar>>(j, i));
+                                }
+                        }
+                }
+
+                cv::addWeighted(imageToRender,
+                                0.5,
+                                imageToProcess,
+                                0.5,
+                                0.,
+                                imageToRender);
                 cv::imwrite("./test.jpg", imageToRender);
-
-            // Display image
-            op::log("Left hand heatmaps size: [" + std::to_string(handHeatMaps[0].getSize(0)) + ", "
-                    + std::to_string(handHeatMaps[0].getSize(1)) + ", "
-                    + std::to_string(handHeatMaps[0].getSize(2)) + ", "
-                    + std::to_string(handHeatMaps[0].getSize(3)) + "]");
-            op::log("Right hand heatmaps size: [" + std::to_string(handHeatMaps[0].getSize(0)) + ", "
-                    + std::to_string(handHeatMaps[1].getSize(1)) + ", "
-                    + std::to_string(handHeatMaps[1].getSize(2)) + ", "
-                    + std::to_string(handHeatMaps[1].getSize(3)) + "]");
         }
         else
+        {
             op::log("Nullptr or empty datumsPtr found.", op::Priority::High);
+        }
     }
     catch (const std::exception& e)
     {
@@ -315,7 +323,7 @@ int tutorialApiCpp()
                           handRectangles.at(0).at(0),
                           netInputSide,
                           datumPtr->netOutputSize,
-                          false);
+                          true);
 
             printKeypoints(datumsPtr);
             if (!FLAGS_no_display)
