@@ -8,14 +8,22 @@
 // Command-line user intraface
 #define OPENPOSE_FLAGS_DISABLE_PRODUCER
 #define OPENPOSE_FLAGS_DISABLE_DISPLAY
+#include "json.hpp"
 #include <openpose/flags.hpp>
 // OpenPose dependencies
 #include <openpose/headers.hpp>
+#include <boost/filesystem.hpp>
+#include <assert.h>
+#include <glob.h>
+
+namespace boostfs = boost::filesystem;
 
 // Custom OpenPose flags
 // Producer
-DEFINE_string(image_path, "examples/media/COCO_val2014_000000000241.jpg",
-    "Process an image. Read all standard formats (jpg, png, bmp, etc.).");
+DEFINE_string(img_dir, "./",
+    "Process a directory of images. Read all standard formats (jpg, png, bmp, etc.).");
+DEFINE_string(proposal_dir, "./", "Read bbox proposals.");
+DEFINE_string(output_dir, "./", "Output directory.");
 // Display
 DEFINE_bool(no_display,                 false,
     "Enable to disable the visual display.");
@@ -84,10 +92,10 @@ cropFrame(cv::Mat& handImage,
         }
 }
 
-// This worker will just read and return all the jpg files in a directory
 static void
 display(const std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>& datumsPtr,
-        const cv::Mat& imageToProcess)
+        const cv::Mat& imageToProcess,
+        const boostfs::path& outpath)
 {
     try
     {
@@ -140,33 +148,12 @@ display(const std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>& datumsPt
                                 0.5,
                                 0.,
                                 imageToRender);
-                cv::imwrite("./test.jpg", imageToRender);
+                cv::imwrite(outpath.c_str(), imageToRender);
         }
         else
         {
             op::log("Nullptr or empty datumsPtr found.", op::Priority::High);
         }
-    }
-    catch (const std::exception& e)
-    {
-        op::error(e.what(), __LINE__, __FUNCTION__, __FILE__);
-    }
-}
-
-void printKeypoints(const std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>& datumsPtr)
-{
-    try
-    {
-        // Example: How to use the pose keypoints
-        if (datumsPtr != nullptr && !datumsPtr->empty())
-        {
-            op::log("Body keypoints: " + datumsPtr->at(0)->poseKeypoints.toString(), op::Priority::High);
-            op::log("Face keypoints: " + datumsPtr->at(0)->faceKeypoints.toString(), op::Priority::High);
-            op::log("Left hand keypoints: " + datumsPtr->at(0)->handKeypoints[0].toString(), op::Priority::High);
-            op::log("Right hand keypoints: " + datumsPtr->at(0)->handKeypoints[1].toString(), op::Priority::High);
-        }
-        else
-            op::log("Nullptr or empty datumsPtr found.", op::Priority::High);
     }
     catch (const std::exception& e)
     {
@@ -282,55 +269,88 @@ int tutorialApiCpp()
         op::log("Starting thread(s)...", op::Priority::High);
         opWrapper.start();
 
+        glob_t globbuf;
+        int ret = glob((FLAGS_proposal_dir + "/*.json").c_str(),
+                       GLOB_TILDE,
+                       NULL,
+                       &globbuf);
+        assert(ret == 0);
+
         // Read image and hand rectangle locations
-        const auto imageToProcess = cv::imread(FLAGS_image_path);
-        const std::vector<std::array<op::Rectangle<float>, 2>> handRectangles{
-            // Left/Right hands of person 0
-            std::array<op::Rectangle<float>, 2>{
-                op::Rectangle<float>{320.035889f, 377.675049f, 69.300949f, 69.300949f}, // Left hand
-                op::Rectangle<float>{0.f, 0.f, 0.f, 0.f}},                              // Right hand
-            // Left/Right hands of person 1
-            std::array<op::Rectangle<float>, 2>{
-                op::Rectangle<float>{80.155792f, 407.673492f, 80.812706f, 80.812706f},  // Left hand
-                op::Rectangle<float>{46.449715f, 404.559753f, 98.898178f, 98.898178f}}, // Right hand
-            // Left/Right hands of person 2
-            std::array<op::Rectangle<float>, 2>{
-                op::Rectangle<float>{185.692673f, 303.112244f, 157.587555f, 157.587555f},// Left hand
-                op::Rectangle<float>{88.984360f, 268.866547f, 117.818230f, 117.818230f}} // Right hand
-        };
+        printf("gl_pathc: %lu\n", globbuf.gl_pathc);
+        for (size_t pathidx = 0;
+             pathidx < globbuf.gl_pathc;
+             ++pathidx) {
+                boostfs::path proppath{globbuf.gl_pathv[pathidx]};
+                boostfs::path impath{FLAGS_img_dir};
+                impath += boostfs::path{proppath}.replace_extension("jpg").filename();
+                boostfs::path outpath{FLAGS_output_dir};
+                outpath += boostfs::path{proppath}.replace_extension("").filename();
+                outpath += boostfs::path{"_heatmap.jpg"};
+                printf("impath %s proppath %s outpath %s\n",
+                       impath.c_str(),
+                       proppath.c_str(),
+                       outpath.c_str());
 
-        // Create new datum
-        auto datumsPtr = std::make_shared<std::vector<std::shared_ptr<op::Datum>>>();
-        datumsPtr->emplace_back();
-        auto& datumPtr = datumsPtr->at(0);
-        datumPtr = std::make_shared<op::Datum>();
-        // Fill datum with image and handRectangles
-        datumPtr->cvInputData = imageToProcess;
-        datumPtr->handRectangles = handRectangles;
+                const auto imageToProcess = cv::imread(impath.c_str());
 
-        // Process and display image
-        opWrapper.emplaceAndPop(datumsPtr);
-        if (datumsPtr != nullptr)
-        {
-                datumPtr->netOutputSize.x = 368;
-                datumPtr->netOutputSize.y = 368;
-                const auto netInputSide = op::fastMin(datumPtr->netOutputSize.x,
-                                                      datumPtr->netOutputSize.y);
-                auto& inputNetData = datumsPtr->at(0)->inputNetData[0];
-                cv::Mat handImage;
-                cropFrame(handImage,
-                          imageToProcess,
-                          handRectangles.at(0).at(0),
-                          netInputSide,
-                          datumPtr->netOutputSize,
-                          true);
+                std::ifstream propifs{proppath.c_str()};
+                nlohmann::json props;
+                propifs >> props;
 
-            printKeypoints(datumsPtr);
-            if (!FLAGS_no_display)
-                display(datumsPtr, handImage);
+                std::vector<std::array<op::Rectangle<float>, 2>> handRectangles;
+                for (auto const& prop: props) {
+                        assert(prop["bbox"].size() == 4);
+
+                        float bbox_len = op::fastMax(prop["bbox"].at(2), prop["bbox"].at(3));
+                        float halflen = bbox_len / 2.0f;
+                        bbox_len += halflen;
+                        float x0 = op::fastMax(static_cast<float>(prop["bbox"].at(0)) - halflen, 0.f);
+                        float y0 = op::fastMax(static_cast<float>(prop["bbox"].at(1)) - halflen, 0.f);
+                        std::array<op::Rectangle<float>, 2> next_bbox{
+                                op::Rectangle<float>{0.f, 0.f, 0.f, 0.f},
+                                op::Rectangle<float>{x0,
+                                                     y0,
+                                                     bbox_len,
+                                                     bbox_len}};
+                        handRectangles.push_back(next_bbox);
+                }
+
+                // Create new datum
+                auto datumsPtr = std::make_shared<std::vector<std::shared_ptr<op::Datum>>>();
+                datumsPtr->emplace_back();
+                auto& datumPtr = datumsPtr->at(0);
+                datumPtr = std::make_shared<op::Datum>();
+                // Fill datum with image and handRectangles
+                datumPtr->cvInputData = imageToProcess;
+                datumPtr->handRectangles = handRectangles;
+
+                // Process and display image
+                opWrapper.emplaceAndPop(datumsPtr);
+                if (datumsPtr != nullptr)
+                {
+                        datumPtr->netOutputSize.x = 368;
+                        datumPtr->netOutputSize.y = 368;
+                        const auto netInputSide = op::fastMin(datumPtr->netOutputSize.x,
+                                                              datumPtr->netOutputSize.y);
+                        auto& inputNetData = datumsPtr->at(0)->inputNetData[0];
+                        cv::Mat handImage;
+                        cropFrame(handImage,
+                                  imageToProcess,
+                                  handRectangles.at(0).at(1),
+                                  netInputSide,
+                                  datumPtr->netOutputSize,
+                                  false);
+
+                        if (!FLAGS_no_display)
+                                display(datumsPtr, handImage, outpath);
+                }
+                else
+                {
+                        op::log("Image could not be processed.", op::Priority::High);
+                }
+                printf("display\n");
         }
-        else
-            op::log("Image could not be processed.", op::Priority::High);
 
         // Info
         op::log("NOTE: In addition with the user flags, this demo has auto-selected the following flags:\n"
