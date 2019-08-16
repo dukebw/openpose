@@ -103,7 +103,7 @@ if (WIN32)
   string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
 elseif (UNIX)
   # Turn on C++11
-  add_definitions(-std=c++17)
+  add_definitions(-std=c++11)
   set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 elseif (APPLE)
   # Turn on C++11
@@ -954,7 +954,7 @@ if (UNIX OR APPLE)
   set(OpenPose_3rdparty_libraries ${OpenPose_3rdparty_libraries} pthread)
 endif (UNIX OR APPLE)
 
-set(examples_3rdparty_libraries ${OpenPose_3rdparty_libraries} ${GFLAGS_LIBRARY} boost_system boost_filesystem)
+set(examples_3rdparty_libraries ${OpenPose_3rdparty_libraries} ${GFLAGS_LIBRARY} boost_system boost_filesystem z cnpy)
 
 
 ### ADD SUBDIRECTORIES
