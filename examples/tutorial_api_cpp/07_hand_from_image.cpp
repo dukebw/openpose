@@ -98,69 +98,6 @@ cropFrame(cv::Mat& handImage,
         }
 }
 
-static void
-display(const std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>& datumsPtr,
-        const cv::Mat& imageToProcess,
-        const boostfs::path& outpath,
-        size_t handidx,
-        size_t personidx)
-{
-    try
-    {
-        // User's displaying/saving/other processing here
-            // datum.cvOutputData: rendered frame with pose or heatmaps
-            // datum.poseKeypoints: Array<float> with the estimated pose
-        if (datumsPtr != nullptr && !datumsPtr->empty())
-        {
-                auto& handHeatMaps = datumsPtr->at(0)->handHeatMaps;
-                auto& hand_heatmap = handHeatMaps[handidx];
-                const auto num_people = hand_heatmap.getSize(0);
-                const auto num_joints = hand_heatmap.getSize(1);
-                const auto height = hand_heatmap.getSize(2);
-                const auto width = hand_heatmap.getSize(3);
-                cv::Mat agg_heatmap = cv::Mat::zeros(cv::Size{height, width}, CV_8UC1);
-                for (int32_t jointidx = 0;
-                     jointidx < num_joints;
-                     ++jointidx) {
-                        cv::Mat desiredChannelHeatMap{
-                                height,
-                                width,
-                                CV_32F,
-                                (hand_heatmap.getPtr() +
-                                 personidx*num_joints*height*width +
-                                 jointidx*height*width)};
-
-                        cv::Mat desiredChannelHeatMapUint8;
-                        desiredChannelHeatMap.convertTo(desiredChannelHeatMapUint8,
-                                                        CV_8UC1);
-                        agg_heatmap = cv::max(agg_heatmap, desiredChannelHeatMapUint8);
-                }
-
-                cv::Mat img_to_render;
-                cv::applyColorMap(agg_heatmap,
-                                  img_to_render,
-                                  cv::COLORMAP_JET);
-
-                cv::addWeighted(img_to_render,
-                                0.5,
-                                imageToProcess,
-                                0.5,
-                                0.,
-                                img_to_render);
-                bool ret = cv::imwrite(outpath.c_str(), img_to_render);
-                assert(ret);
-        }
-        else
-        {
-            op::log("Nullptr or empty datumsPtr found.", op::Priority::High);
-        }
-    }
-    catch (const std::exception& e)
-    {
-        op::error(e.what(), __LINE__, __FUNCTION__, __FILE__);
-    }
-}
-
 void configureWrapper(op::Wrapper& opWrapper)
 {
     try
@@ -269,6 +206,56 @@ addsuffix(const boostfs::path& outpath, const std::string& suffix)
         return newpath;
 }
 
+static void
+encode_heatmaps(std::vector<uchar>& heatmapsbin,
+                std::vector<int64_t>& heatmapsbin_sizes,
+                op::Array<float>& hand_heatmap,
+                size_t rectidx,
+                const std::vector<int>& compression_params)
+{
+        const size_t num_joints = hand_heatmap.getSize(1);
+        auto height = hand_heatmap.getSize(2);
+        auto width = hand_heatmap.getSize(3);
+        for (int32_t jointidx = 0;
+             jointidx < num_joints;
+             ++jointidx) {
+                cv::Mat joint_heatmap{
+                        height,
+                        width,
+                        CV_32F,
+                        (hand_heatmap.getPtr() +
+                         rectidx*num_joints*height*width +
+                         jointidx*height*width)};
+
+                cv::Mat joint_hmap_small;
+                /**
+                 * NOTE(brendan): reduced side length by factor of 4 for
+                 * storage
+                 */
+                cv::resize(joint_heatmap,
+                           joint_hmap_small,
+                           cv::Size{92, 92},
+                           0,
+                           0,
+                           cv::INTER_LINEAR);
+
+                cv::Mat joint_heatmap_u8;
+                joint_hmap_small.convertTo(joint_heatmap_u8, CV_8UC1);
+
+                std::vector<uchar> outbuf;
+                bool ret = cv::imencode(".png",
+                                        joint_heatmap_u8,
+                                        outbuf,
+                                        compression_params);
+                assert(ret);
+
+                heatmapsbin.insert(heatmapsbin.end(),
+                                   outbuf.begin(),
+                                   outbuf.end());
+                heatmapsbin_sizes.push_back(outbuf.size());
+        }
+}
+
 /**
  * NOTE(brendan): Take in a subdirectory that is full of images, e.g.,
  * /path/to/starter-kit-action-recognition/data/interim/rgb_train_segments/P05/P05_06/P05_06_10592_pour-sugar-in-cup
@@ -358,6 +345,7 @@ int tutorialApiCpp(void)
                 opWrapper.emplaceAndPop(datumsPtr);
                 assert(datumsPtr != nullptr);
 
+                assert(FLAGS_no_display);
                 datumPtr->netOutputSize.x = 368;
                 datumPtr->netOutputSize.y = 368;
                 auto netInputSide = op::fastMin(datumPtr->netOutputSize.x,
@@ -374,78 +362,17 @@ int tutorialApiCpp(void)
                         auto& handrect = handRectangles[rectidx];
 
                         cv::Mat handImage;
-                        auto outpath_rect = addsuffix(outpath,
-                                                      (std::string{"rect"} +
-                                                       std::to_string(rectidx)));
-                        cropFrame(handImage,
-                                  imageToProcess,
-                                  handrect.at(0),
-                                  netInputSide,
-                                  datumPtr->netOutputSize,
-                                  true);
+                        encode_heatmaps(heatmapsbin,
+                                        heatmapsbin_sizes,
+                                        datumsPtr->at(0)->handHeatMaps[0],
+                                        rectidx,
+                                        compression_params);
 
-                        if (!FLAGS_no_display) {
-                                auto outpath_display = addsuffix(outpath_rect,
-                                                                 "_heatmap_left.jpg");
-                                display(datumsPtr,
-                                        handImage,
-                                        outpath_display,
-                                        0,
-                                        rectidx);
-                        }
-
-                        cropFrame(handImage,
-                                  imageToProcess,
-                                  handrect.at(1),
-                                  netInputSide,
-                                  datumPtr->netOutputSize,
-                                  false);
-
-                        if (!FLAGS_no_display) {
-                                auto outpath_display = addsuffix(outpath_rect,
-                                                                 "_heatmap_right.jpg");
-                                display(datumsPtr,
-                                        handImage,
-                                        outpath_display,
-                                        1,
-                                        rectidx);
-                        }
-
-                        auto& handHeatMaps = datumsPtr->at(0)->handHeatMaps;
-                        auto& hand_heatmap = handHeatMaps[1];
-                        const size_t num_joints = hand_heatmap.getSize(1);
-                        auto height = hand_heatmap.getSize(2);
-                        auto width = hand_heatmap.getSize(3);
-                        for (int32_t jointidx = 0;
-                             jointidx < num_joints;
-                             ++jointidx) {
-                                cv::Mat joint_heatmap{
-                                        height,
-                                        width,
-                                        CV_32F,
-                                        hand_heatmap.getPtr() + jointidx*height*width};
-
-                                cv::Mat joint_heatmap_u8;
-                                joint_heatmap.convertTo(joint_heatmap_u8,
-                                                        CV_8UC1);
-
-                                auto outpath_joint = addsuffix(outpath_rect,
-                                                               (std::string{"joint"} +
-                                                                std::to_string(jointidx) +
-                                                                std::string{".png"}));
-
-                                std::vector<uchar> outbuf;
-                                bool ret = cv::imencode(".png",
-                                                        joint_heatmap_u8,
-                                                        outbuf,
-                                                        compression_params);
-                                assert(ret);
-
-                                heatmapsbin.insert(heatmapsbin.end(),
-                                                   outbuf.begin(),
-                                                   outbuf.end());
-                                heatmapsbin_sizes.push_back(outbuf.size());
-                        }
+                        encode_heatmaps(heatmapsbin,
+                                        heatmapsbin_sizes,
+                                        datumsPtr->at(0)->handHeatMaps[1],
+                                        rectidx,
+                                        compression_params);
                 }
 
                 auto outpath_heatmaps = addsuffix(outpath, "_heatmaps.npy");
