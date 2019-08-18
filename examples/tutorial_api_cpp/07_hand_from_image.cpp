@@ -60,44 +60,6 @@ type2str(int type)
         return r;
 }
 
-/**
- * NOTE(brendan): based on
- * https://github.com/dukebw/openpose/blob/f09e48820a44480d4c1197b8a2228ce76c073c68/src/openpose/hand/handExtractorCaffe.cpp#L44.
- */
-static void
-cropFrame(cv::Mat& handImage,
-          const cv::Mat& cvInputData,
-          const op::Rectangle<float>& handRectangle,
-          int netInputSide,
-          const op::Point<int>& netOutputSize,
-          bool mirrorImage)
-{
-        try
-        {
-                // Resize image to hands positions
-                const auto scaleLeftHand = handRectangle.width / (float)netInputSide;
-                cv::Mat affineMatrix = cv::Mat::eye(2,3,CV_64F);
-                if (mirrorImage)
-                        affineMatrix.at<double>(0,0) = -scaleLeftHand;
-                else
-                        affineMatrix.at<double>(0,0) = scaleLeftHand;
-                affineMatrix.at<double>(1,1) = scaleLeftHand;
-                if (mirrorImage)
-                        affineMatrix.at<double>(0,2) = handRectangle.x + handRectangle.width;
-                else
-                        affineMatrix.at<double>(0,2) = handRectangle.x;
-                affineMatrix.at<double>(1,2) = handRectangle.y;
-                cv::warpAffine(cvInputData, handImage, affineMatrix, cv::Size{netOutputSize.x, netOutputSize.y},
-                               CV_INTER_LINEAR | CV_WARP_INVERSE_MAP, cv::BORDER_CONSTANT, cv::Scalar{0,0,0});
-                // CV_INTER_CUBIC | CV_WARP_INVERSE_MAP, cv::BORDER_CONSTANT, cv::Scalar{0,0,0});
-                // cv::Mat -> float*
-        }
-        catch (const std::exception& e)
-        {
-                op::error(e.what(), __LINE__, __FUNCTION__, __FILE__);
-        }
-}
-
 void configureWrapper(op::Wrapper& opWrapper)
 {
     try
