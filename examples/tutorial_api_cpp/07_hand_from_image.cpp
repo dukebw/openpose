@@ -172,7 +172,6 @@ static void
 encode_heatmaps(std::vector<uchar>& heatmapsbin,
                 std::vector<int64_t>& heatmapsbin_sizes,
                 op::Array<float>& hand_heatmap,
-                size_t rectidx,
                 const std::vector<int>& compression_params)
 {
         const size_t num_joints = hand_heatmap.getSize(1);
@@ -185,9 +184,7 @@ encode_heatmaps(std::vector<uchar>& heatmapsbin,
                         height,
                         width,
                         CV_32F,
-                        (hand_heatmap.getPtr() +
-                         rectidx*num_joints*height*width +
-                         jointidx*height*width)};
+                        (hand_heatmap.getPtr() + jointidx*height*width)};
 
                 cv::Mat joint_hmap_small;
                 /**
@@ -225,8 +222,6 @@ encode_heatmaps(std::vector<uchar>& heatmapsbin,
  * FLAGS_output_dir/P05/P05_06/P05_06_10592_pour-sugar-in-cup/heatmaps.
  * Also visualize the heatmaps in FLAGS_output_dir/P05/P05_06/P05_06_10592_pour-sugar-in-cup/display,
  * unless FLAGS_no_display is set.
- *
- * TODO(brendan): Distinguish left/right hands.
  */
 int tutorialApiCpp(void)
 {
@@ -279,20 +274,61 @@ int tutorialApiCpp(void)
                 nlohmann::json props;
                 propifs >> props;
 
-                std::vector<std::array<op::Rectangle<float>, 2>> handRectangles;
+                constexpr int LEFT_INDEX = 1;
+                constexpr int RIGHT_INDEX = 2;
+                auto right = op::Rectangle<float>{0.f, 0.f, 0.f, 0.f};
+                float right_score = 0.f;
+                auto left = op::Rectangle<float>{0.f, 0.f, 0.f, 0.f};
+
+                float left_score = 0.f;
+                uint32_t num_left = 0;
+                uint32_t num_right = 0;
+                for (size_t i = 0;
+                     i < props.size();
+                     ++i) {
+                        auto& prop = props[i];
+                        if (prop["label"] == LEFT_INDEX) {
+                                ++num_left;
+                        } else {
+                                assert(prop["label"] == RIGHT_INDEX);
+                                ++num_right;
+                        }
+                }
+
                 for (size_t i = 0;
                      i < props.size();
                      ++i) {
                         auto& prop = props[i];
                         assert(prop["bbox"].size() == 4);
-
-                        auto right = get_rect(prop["bbox"]);
-                        auto left = get_rect(prop["bbox"]);
-
-                        std::array<op::Rectangle<float>, 2> next_bbox{left,
-                                                                      right};
-                        handRectangles.push_back(next_bbox);
+                        if (prop["label"] == LEFT_INDEX) {
+                                if (prop["score"] > left_score) {
+                                        /**
+                                         * NOTE(brendan): when there are
+                                         * multiple right and no left
+                                         * handboxes, set the second highest
+                                         * scoring box to left, and vice versa.
+                                         */
+                                        if (num_right == 0) {
+                                                right = left;
+                                        }
+                                        left = get_rect(prop["bbox"]);
+                                        left_score = prop["score"];
+                                }
+                        } else {
+                                assert(prop["label"] == RIGHT_INDEX);
+                                if (prop["score"] > right_score) {
+                                        if (num_left == 0) {
+                                                left = right;
+                                        }
+                                        right = get_rect(prop["bbox"]);
+                                        right_score = prop["score"];
+                                }
+                        }
                 }
+
+                std::vector<std::array<op::Rectangle<float>, 2>> handRectangles;
+                auto both_hands = std::array<op::Rectangle<float>, 2>{left, right};
+                handRectangles.push_back(both_hands);
 
                 // Create new datum
                 auto datumsPtr = std::make_shared<std::vector<std::shared_ptr<op::Datum>>>();
@@ -317,25 +353,17 @@ int tutorialApiCpp(void)
                 compression_params.push_back(9);
                 std::vector<uchar> heatmapsbin;
                 std::vector<int64_t> heatmapsbin_sizes;
-                for (size_t rectidx = 0;
-                     rectidx < handRectangles.size();
-                     ++rectidx) {
-                        printf("rectidx %lu\n", rectidx);
-                        auto& handrect = handRectangles[rectidx];
+                cv::Mat handImage;
+                /* TODO(brendan): only do this if there is a proposal. */
+                encode_heatmaps(heatmapsbin,
+                                heatmapsbin_sizes,
+                                datumsPtr->at(0)->handHeatMaps[0],
+                                compression_params);
 
-                        cv::Mat handImage;
-                        encode_heatmaps(heatmapsbin,
-                                        heatmapsbin_sizes,
-                                        datumsPtr->at(0)->handHeatMaps[0],
-                                        rectidx,
-                                        compression_params);
-
-                        encode_heatmaps(heatmapsbin,
-                                        heatmapsbin_sizes,
-                                        datumsPtr->at(0)->handHeatMaps[1],
-                                        rectidx,
-                                        compression_params);
-                }
+                encode_heatmaps(heatmapsbin,
+                                heatmapsbin_sizes,
+                                datumsPtr->at(0)->handHeatMaps[1],
+                                compression_params);
 
                 auto outpath_heatmaps = addsuffix(outpath, "_heatmaps.npy");
                 cnpy::npy_save(outpath_heatmaps.string(), heatmapsbin, "w");
